@@ -1,0 +1,416 @@
+---
+title: "Annotation analysis"
+subtitle: "Combined annotation analysis"
+author: "Paul Heinrich"
+output: 
+    html_document:
+        toc: true
+---
+
+```{r setup1, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.dim = c(10, 10))
+```
+
+# Notes
+
+With clustering resolution of 1. Reference single cell dataset from "A single-cell survey of the small intestinal epithelium"
+(Haber et al., 2017, Nature), available at NCBI GEO (https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE92332). Combining SingleR
+with known marker/module score annotation.
+
+```{r setup2,echo=FALSE, warning=FALSE, message=FALSE}
+#rbioc_3-14
+library(rprojroot)
+library(yaml)
+library(knitr)
+
+saveData <- FALSE
+
+root_criterion <- ".projroot"
+proot <- rprojroot::has_file(root_criterion)
+
+source(proot$find_file("experiments/scRNA/analysis/custom/functions/custom_functions.R"))
+
+params <- list()
+params$config <- proot$find_file("experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/config.yaml")
+params$analparams <- proot$find_file("experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/analparams_preprocessing_filters_2023-05-04.yaml")
+params$date <- Sys.Date()
+
+config <- yaml.load_file(proot$find_file(params$config))
+today <- params$date
+
+clusterCol <- "RNA_snn_res.1"
+refName <- "Haber_2017"
+
+config <- yaml.load_file(proot$find_file(params$config))
+analparams <- yaml.load_file(proot$find_file(params$analparams))
+
+# libraries
+libload <- c(
+    "Seurat","ggplot2", "harmony", "Nebulosa", "future",
+    "WriteXLS", "knitr", "stringr", "dplyr", "tidyr", "SingleR",
+    "pheatmap"
+)
+
+for(i in libload) {
+    library(i, character.only = T)
+}
+
+plan("multicore", workers = 6)
+plan()
+
+set.seed(7)
+```
+
+```{r loaddata,eval=T,echo=F}
+
+SObj <- readRDS(proot$find_file(analparams$Seurat_clustered))
+
+```
+
+```{r prepare_data,eval=T,echo=F}
+
+celltypes <- c(
+    "Stem",
+    "TA",
+    "Enterocyte.Progenitor",
+    "Enterocyte",
+    "Endocrine",
+    "Goblet.Paneth",
+    "Tuft"
+)
+
+SObj@meta.data <- SObj@meta.data %>%
+    mutate(annot_SingleR_mod = factor(
+        annot_SingleR_mod, levels = celltypes
+    ))
+
+knownMarkers <- list()
+
+knownMarkers[["Stem"]] <- c("Lgr5", "Ascl2", "Slc12a2", "Axin2", "Olfm4", "Gkn3")
+knownMarkers[["Cell_cycle"]] <- c("Mki67", "Cdk4", "Mcm5", "Mcm6", "Pcna")
+knownMarkers[["Enterocyte"]] <- c("Alpi", "Apoa1", "Apoa4", "Fabp1")
+knownMarkers[["Enteroendocrine"]] <- c("Chga", "Chgb", "Tac1", "Tph1", "Neurog3")
+knownMarkers[["Goblet"]] <- c("Muc2", "Clca1", "Tff3", "Agr2") # Replace Clca3 with Clca1, as this appears to be the official name
+knownMarkers[["Paneth"]] <- c("Lyz1", "Defa17", "Defa22", "Defa24", "Ang4")
+knownMarkers[["Tuft"]] <- c("Dclk1", "Trpm5", "Gfi1b", "Il25")
+knownMarkers[["G2M_phase"]] <- str_to_title(tolower(cc.genes.updated.2019$g2m.genes))
+knownMarkers[["S_phase"]] <- str_to_title(tolower(cc.genes.updated.2019$s.genes))
+
+```
+
+```{r define_palettes,eval=T,echo=F}
+
+annots <- levels(SObj@meta.data[["annot_SingleR_mod"]])
+paletteAnnots <- scales::hue_pal()(length(annots))
+names(paletteAnnots) <- sort(annots)
+paletteAnnots <- paletteAnnots[annots]
+
+markerGeneCelltypeLabels <- c(
+    "Stem",
+    "Cell cycle",
+    "Enterocyte",
+    "Endocrine",
+    "Goblet",
+    "Paneth",
+    "Tuft",
+    "Cell cycle G2M phase",
+    "Cell cycle S phase"
+)
+names(markerGeneCelltypeLabels) <- names(knownMarkers)
+
+paletteMarkerGeneCelltypes <- c(
+    "Stem" = "#00B6EB",
+    "Cell cycle" = "#595d68",
+    "Enterocyte" = "#C49A00",
+    "Endocrine" = "#F8766D",
+    "Goblet" = "#00C094",
+    "Paneth" = "#FFD92F",
+    "Tuft" = "#FB61D7"
+)
+
+```
+
+# Clustering and SingleR annotation
+
+```{r umap_plots_annot, eval=T, echo=F}
+
+DimPlot(SObj, group.by = clusterCol)
+DimPlot(SObj, group.by = "annot_SingleR_mod", cols = paletteAnnots)
+
+```
+
+```{r module_score_averages, eval=T, echo=F}
+
+clusterModuleScore <- SObj@meta.data %>%
+    group_by(.data[[clusterCol]]) %>%
+    summarise(across(matches("^MS_(?!.*mean)", perl = TRUE), mean, .names = "{.col}_cluster_mean"))
+
+annotModuleScore <- SObj@meta.data %>%
+    group_by(annot_SingleR_mod) %>%
+    summarise(across(matches("^MS_(?!.*mean)", perl = TRUE), mean, .names = "{.col}_annot_mean"))
+
+clusterUCellScore <- SObj@meta.data %>%
+    group_by(.data[[clusterCol]]) %>%
+    summarise(across(ends_with("_UCell"), mean, .names = "{.col}_cluster_mean"))
+
+annotUCellScore <- SObj@meta.data %>%
+    group_by(annot_SingleR_mod) %>%
+    summarise(across(ends_with("_UCell"), mean, .names = "{.col}_annot_mean"))
+
+metadataAvgMS <- SObj@meta.data %>%
+    inner_join(clusterModuleScore, by = clusterCol) %>%
+    inner_join(annotModuleScore, by = "annot_SingleR_mod") %>%
+    inner_join(clusterUCellScore, by = clusterCol) %>%
+    inner_join(annotUCellScore, by = "annot_SingleR_mod")
+
+rownames(metadataAvgMS) <- rownames(SObj@meta.data)
+
+all.equal(SObj@meta.data[, 1:30], metadataAvgMS[, 1:30])
+
+SObj@meta.data <- metadataAvgMS
+
+```
+
+# Module and UCell scores
+
+## Module scores
+
+```{r plot_module_score, eval=T, echo=F, results='asis', fig.dim=c(10, 10)}
+
+umapPlotsModuleScore <- list()
+
+for (celltype in names(knownMarkers)) {
+    umapPlotsModuleScore[[celltype]] <- FeaturePlot(
+        SObj, features = paste0("MS_", celltype)
+    ) + labs(title = markerGeneCelltypeLabels[celltype])
+
+    cat(paste0("### Celltype: ", markerGeneCelltypeLabels[celltype]))
+    cat("\n\n")
+    cat(paste0("Markers: ", paste(knownMarkers[[celltype]], collapse = ", ")))
+    cat("\n\n")
+    print(umapPlotsModuleScore[[celltype]])
+    cat("\n\n")
+}
+
+```
+
+## UCell scores
+
+```{r plot_ucell_score, eval=T, echo=F, results='asis', fig.dim=c(10, 10)}
+
+umapPlotsUCellScore <- list()
+
+for (celltype in names(knownMarkers)) {
+    umapPlotsUCellScore[[celltype]] <- FeaturePlot(
+        SObj, features = paste0(celltype, "_UCell")
+    ) + labs(title = markerGeneCelltypeLabels[celltype])
+
+    cat(paste0("### Celltype: ", markerGeneCelltypeLabels[celltype]))
+    cat("\n\n")
+    cat(paste0("Markers: ", paste(knownMarkers[[celltype]], collapse = ", ")))
+    cat("\n\n")
+    print(umapPlotsUCellScore[[celltype]])
+    cat("\n\n")
+}
+
+```
+
+# Module and UCell score average tables
+
+```{r module_score_average_tables, eval=T, echo=F, results='asis', fig.dim=c(10, 10)}
+
+cat("## Module score averages by cluster")
+cat("\n\n")
+kable(clusterModuleScore)
+
+cat("## UCell score averages by cluster")
+cat("\n\n")
+kable(clusterUCellScore)
+
+cat("## Module score averages by SingleR annotation")
+cat("\n\n")
+kable(annotModuleScore)
+
+cat("## UCell score averages by SingleR annotation")
+cat("\n\n")
+kable(annotUCellScore)
+
+```
+
+# Marker gene heatmaps
+
+```{r marker_heatmaps, eval=T, echo=F, results='asis', fig.dim=c(10, 10)}
+
+celltypeMarkers <- c()
+markerGeneCelltypes <- c()
+
+for (celltype in names(knownMarkers)[1:7]) {
+    markerGeneCelltypes <- c(
+        markerGeneCelltypes,
+        rep(markerGeneCelltypeLabels[celltype], length(knownMarkers[[celltype]]))
+    )
+    celltypeMarkers <- c(celltypeMarkers, knownMarkers[[celltype]])
+}
+
+# Heatmaps Seurat
+
+cat("## Clusters")
+cat("\n\n")
+DoHeatmap(SObj, features = celltypeMarkers, group.by = clusterCol)
+cat("\n\n")
+
+cat("## SingleR annotation")
+cat("\n\n")
+DoHeatmap(SObj, features = celltypeMarkers, group.by = "annot_SingleR_mod")
+cat("\n\n")
+
+# Heatmap pheatmap
+
+celltypeMarkerTable <- data.frame(
+    "marker" = celltypeMarkers,
+    "Celltype markers" = markerGeneCelltypes,
+    row.names = 1,
+    check.names = FALSE
+)
+celltypeMarkerTable[["Celltype markers"]] <- factor(
+    celltypeMarkerTable[["Celltype markers"]], levels = markerGeneCelltypeLabels
+)
+
+scaledDataMarkers <- GetAssayData(SObj, slot = "scale.data")[celltypeMarkers, ]
+
+annotInfoOrdered <- SObj@meta.data[order(SObj@meta.data$annot_SingleR_mod), c("annot_SingleR_mod"), drop = FALSE]
+colnames(annotInfoOrdered) <- "Celltype annotation"
+
+cat("## SingleR annotation, pheatmap")
+cat("\n\n")
+
+pheatmap(
+    scaledDataMarkers[, rownames(annotInfoOrdered)],
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    show_colnames = FALSE,
+    color = colorRampPalette(c("magenta", "black", "yellow"))(100),
+    breaks = seq(-2.5, 2.5, length.out = 101),
+    annotation_col = annotInfoOrdered,
+    annotation_row = celltypeMarkerTable,
+    annotation_colors = list(
+        "Celltype annotation" = paletteAnnots,
+        "Celltype markers" = paletteMarkerGeneCelltypes
+    ),
+    annotation_names_col = FALSE,
+    annotation_names_row = FALSE
+)
+
+cat("\n\n")
+
+```
+
+```{r save_plots, eval=saveData, echo=F}
+
+plotPathManuscript <- proot$find_file(config$outputpath, "fig", "manuscript")
+plotPathUmapPlots <- file.path(plotPathManuscript, "umap_marker_scores")
+
+# Marker score UMAP plots
+
+umapScorePlotCombA <- c("Stem", "Cell_cycle", "S_phase", "G2M_phase")
+umapScorePlotCombB <- c("Enterocyte", "Enteroendocrine", "Goblet", "Paneth")
+
+ggsave(
+    filename = file.path(plotPathUmapPlots, "umap_UCell_scores_Stem_cell-cycle.pdf"),
+    plot = wrap_plots(umapPlotsUCellScore[umapScorePlotCombA]),
+    device = "pdf",
+    dpi = 300,
+    width = 10,
+    height = 12
+)
+ggsave(
+    filename = file.path(plotPathUmapPlots, "umap_UCell_scores_other-celltypes.pdf"),
+    plot = wrap_plots(umapPlotsUCellScore[umapScorePlotCombB]),
+    device = "pdf",
+    dpi = 300,
+    width = 10,
+    height = 12
+)
+ggsave(
+    filename = file.path(plotPathUmapPlots, "umap_module_scores_Stem_cell-cycle.pdf"),
+    plot = wrap_plots(umapPlotsModuleScore[umapScorePlotCombA]),
+    device = "pdf",
+    dpi = 300,
+    width = 10,
+    height = 12
+)
+ggsave(
+    filename = file.path(plotPathUmapPlots, "umap_module_scores_other-celltypes.pdf"),
+    plot = wrap_plots(umapPlotsModuleScore[umapScorePlotCombB]),
+    device = "pdf",
+    dpi = 300,
+    width = 10,
+    height = 12
+)
+
+# Celltype marker heatmap
+
+pheatmap(
+    scaledDataMarkers,
+    filename = proot$find_file(config$outputpath, "fig", "manuscript", "heatmaps_annot", "marker_heatmap.pdf"),
+    width = 10,
+    height = 10,
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    show_colnames = FALSE,
+    color = colorRampPalette(c("magenta", "black", "yellow"))(100),
+    breaks = seq(-2.5, 2.5, length.out = 101),
+    annotation_col = annotInfoOrdered,
+    annotation_row = celltypeMarkerTable,
+    annotation_colors = list(
+        "Celltype annotation" = paletteAnnots,
+        "Celltype markers" = paletteMarkerGeneCelltypes
+    ),
+    annotation_names_col = FALSE,
+    annotation_names_row = FALSE
+)
+
+```
+
+```{r save_plot_data, eval=saveData, echo=F}
+
+plotDataPath <- file.path(plotPathManuscript, "plot_data")
+
+# Marker heatmap data
+
+markerHeatmapData <- as.data.frame(t(scaledDataMarkers))
+
+all.equal(rownames(markerHeatmapData), rownames(SObj@meta.data))
+
+markerHeatmapData[["annot_SingleR_mod"]] <- SObj@meta.data[["annot_SingleR_mod"]]
+
+write.csv(
+    markerHeatmapData,
+    file = file.path(plotDataPath, "marker_heatmap_data.csv"),
+    row.names = TRUE,
+    quote = FALSE
+)
+
+# Marker gene data
+
+markerGeneInfo <- celltypeMarkerTable %>% tibble::rownames_to_column("marker_gene")
+colnames(markerGeneInfo)[2] <- "celltype"
+
+write.csv(
+    markerGeneInfo,
+    file = file.path(plotDataPath, "marker_gene_info.csv"),
+    row.names = FALSE,
+    quote = FALSE
+)
+
+```
+
+# SessionInfo
+
+```{r sessionInfo}
+
+sessionInfo()
+
+```
+

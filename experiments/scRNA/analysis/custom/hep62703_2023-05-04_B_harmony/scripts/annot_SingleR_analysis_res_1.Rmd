@@ -1,0 +1,883 @@
+---
+title: "SingleR annotation analysis"
+author: "Paul Heinrich"
+output: 
+    html_document:
+        toc: true
+---
+
+```{r setup1, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.dim = c(10, 10))
+```
+
+# Notes
+
+With clustering resolution of 1. Reference single cell dataset from "A single-cell survey of the small intestinal epithelium"
+(Haber et al., 2017, Nature), available at NCBI GEO (https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE92332).
+
+```{r setup2,echo=FALSE, warning=FALSE, message=FALSE}
+#rbioc_3-14
+library(rprojroot)
+library(yaml)
+library(knitr)
+
+saveData <- FALSE
+
+root_criterion <- ".projroot"
+proot <- rprojroot::has_file(root_criterion)
+
+source(proot$find_file("experiments/scRNA/analysis/custom/functions/custom_functions.R"))
+
+params <- list()
+params$config <- proot$find_file("experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/config.yaml")
+params$analparams <- proot$find_file("experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/analparams_preprocessing_filters_2023-05-04.yaml")
+params$date <- Sys.Date()
+
+config <- yaml.load_file(proot$find_file(params$config))
+today <- params$date
+
+clusterCol <- "RNA_snn_res.1"
+refName <- "Haber_2017"
+annotCol <- "annot_SingleR_mod"
+
+config <- yaml.load_file(proot$find_file(params$config))
+analparams <- yaml.load_file(proot$find_file(params$analparams))
+
+# libraries
+libload <- c(
+    "Seurat", "ggplot2", "harmony", "Nebulosa", "future",
+    "WriteXLS", "knitr", "stringr", "dplyr", "tidyr", "SingleR",
+    "viridis", "pheatmap"
+)
+
+for(lib in libload) {
+    library(lib, character.only = TRUE)
+}
+
+plan("multicore", workers = 6)
+plan()
+
+set.seed(7)
+```
+
+```{r loaddata,eval=T,echo=F}
+
+SObj <- readRDS(proot$find_file(analparams$Seurat_clustered))
+
+labelsSingleR <- readRDS(
+    proot$find_file(
+        config$outputpath, "data",
+        paste0("annot_SingleR_", refName, ".rds")
+    )
+)
+labelsSingleRClusters <- readRDS(
+    proot$find_file(
+        config$outputpath, "data",
+        paste0("annot_SingleR_", refName, "_", clusterCol, ".rds")
+    )
+)
+
+```
+
+```{r prepare_data, eval=T,echo=F}
+
+celltypes <- unique(SObj@meta.data[[annotCol]])
+
+relevantCelltypes <- c(
+    "Stem",
+    "TA",
+    "Enterocyte.Progenitor",
+    "Enterocyte",
+    "Endocrine",
+    "Goblet.Paneth",
+    "Tuft"
+)
+
+relevantCelltypesLabels <- c(
+    "Stem",
+    "TA",
+    "Enterocyte Progenitor",
+    "Enterocyte",
+    "Endocrine",
+    "Goblet/Paneth",
+    "Tuft"
+)
+names(relevantCelltypesLabels) <- relevantCelltypes
+
+relevantCelltypesOrig <- c(
+    "Stem",
+    "TA",
+    "Enterocyte.Progenitor",
+    "Enterocyte",
+    "Endocrine",
+    "Goblet",
+    "Paneth",
+    "Tuft"
+)
+
+SObj@meta.data[[annotCol]] <- factor(
+    SObj@meta.data[[annotCol]],
+    levels = relevantCelltypes
+)
+SObj@meta.data[["cell_density"]] <- 1
+
+```
+
+```{r define_palettes, eval=T,echo=F}
+
+clusters <- levels(SObj@meta.data[[clusterCol]])
+paletteClusters <- scales::hue_pal()(length(clusters))
+names(paletteClusters) <- clusters
+
+annots <- levels(SObj@meta.data[[annotCol]])
+paletteAnnots <- scales::hue_pal()(length(annots))
+names(paletteAnnots) <- sort(annots)
+paletteAnnots <- paletteAnnots[annots]
+
+paletteAnnotsOrig <- paletteAnnots[
+    names(paletteAnnots) %in% relevantCelltypesOrig
+]
+paletteAnnotsOrig["Goblet"] <- "#00C094"
+paletteAnnotsOrig["Paneth"] <- "#FFD92F"
+
+paletteAnnotsOrig <- paletteAnnotsOrig[relevantCelltypesOrig]
+
+```
+
+# SingleR annotation diagnostic plots
+
+## Score Heatmap with annotation at single cell level
+
+### SingleR score heatmap
+
+```{r score_heatmap_SingleR, eval=T, echo=F, fig.dim=c(15, 10)}
+
+plotScoreHeatmap(labelsSingleR)
+
+```
+
+```{r score_heatmap_custom, eval=T, echo=F, fig.dim=c(15, 10), results = 'asis'}
+
+scoresSingleR <- as.data.frame(labelsSingleR$scores)
+rownames(scoresSingleR) <- rownames(labelsSingleR)
+
+scoresSingleR[["Celltype annotation"]] <- factor(
+    SObj$annot_SingleR,
+    levels = relevantCelltypesOrig
+)
+
+scoresSingleR <- scoresSingleR[order(scoresSingleR[["Celltype annotation"]]), ]
+
+scoresSingleRMat <- t(as.matrix(scoresSingleR[, relevantCelltypesOrig]))
+scoresSingleRMatNorm <- apply(scoresSingleRMat, 2, function(x) (x - min(x))/(max(x) - min(x)))^3
+
+cat("### Custom score heatmap, clustering of rows")
+cat("\n\n")
+
+pheatmap(
+    scoresSingleRMatNorm,
+    color = viridis(100),
+    cluster_rows = TRUE,
+    cluster_cols = FALSE,
+    show_colnames = FALSE,
+    annotation_col = scoresSingleR[, "Celltype annotation", drop = FALSE],
+    annotation_colors = list("Celltype annotation" = paletteAnnotsOrig),
+    annotation_names_col = FALSE,
+    breaks = seq(0, 1, length.out = 101),
+    legend_breaks = c(0, 1),
+    legend_labels = c("Lower", "Higher")
+)
+
+cat("\n\n")
+
+cat("### Custom score heatmap, no clustering of rows")
+cat("\n\n")
+
+pheatmap(
+    scoresSingleRMatNorm,
+    color = viridis(100),
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    show_colnames = FALSE,
+    annotation_col = scoresSingleR[, "Celltype annotation", drop = FALSE],
+    annotation_colors = list("Celltype annotation" = paletteAnnotsOrig),
+    annotation_names_col = FALSE,
+    breaks = seq(0, 1, length.out = 101),
+    legend_breaks = c(0, 1),
+    legend_labels = c("Lower", "Higher")
+)
+
+```
+
+## Score Heatmap with annotation at cluster level
+
+```{r score_heatmap_SingleR_clusters, eval=T, echo=F, fig.dim=c(15, 10)}
+
+plotScoreHeatmap(labelsSingleRClusters)
+
+```
+
+## Delta distribution plots
+
+```{r delta_distribution_plots, eval=T, echo=F}
+
+plotDeltaDistribution(labelsSingleR, ncol = 3)
+
+```
+
+```{r delta_to_second_distribution, eval=T, echo=F, fig.dim=c(15, 10), results='asis'}
+
+scoresSingleRDeltaDist <- as.data.frame(labelsSingleR$scores)
+scoresSingleRDeltaDist[["cell_id"]] <- rownames(labelsSingleR)
+
+scoresSingleRDeltaDist$Label <- factor(
+    SObj@meta.data[[annotCol]],
+    levels = relevantCelltypes
+)
+
+scoresSingleRDeltaDist <- cbind(scoresSingleRDeltaDist, as.data.frame(labelsSingleR$tuning.scores))
+scoresSingleRDeltaDist <- scoresSingleRDeltaDist %>% relocate(cell_id, Label)
+scoresSingleRDeltaDist <- scoresSingleRDeltaDist %>% mutate(delta = first - second)
+
+scoresSingleRDeltaDist <- scoresSingleRDeltaDist %>%
+    group_by(Label) %>%
+    mutate(median_delta = median(delta)) %>%
+    mutate(dev_delta = delta - median_delta) %>%
+    mutate(median_abs_dev = median(abs(dev_delta)))
+
+scoresSingleRDeltaDist[, c("first_label", "second_label")] <- t(apply(
+    as.matrix(scoresSingleRDeltaDist[, relevantCelltypesOrig]), 1,
+    function(x) relevantCelltypesOrig[order(x, decreasing = TRUE)][1:2]
+))
+
+```
+
+# UMAP plots of clusters and SingleR annotation
+
+```{r umap_plots, eval=T, echo=F}
+
+umapPlotClusters <- DimPlot(SObj, group.by = clusterCol) +
+    scale_color_manual(
+        breaks = names(paletteClusters),
+        values = paletteClusters,
+        labels = clusters
+    ) + labs(title = "Clustering")
+
+umapPlotAnnot <- DimPlot(SObj, group.by = annotCol) +
+    scale_color_manual(
+        breaks = names(paletteAnnots),
+        values = paletteAnnots,
+        labels = relevantCelltypesLabels
+    ) + labs(title = "SingleR cell type annotation")
+
+umapPlotAnnotClusters <- DimPlot(SObj, group.by = paste0("annot_SingleR_", clusterCol))
+
+umapPlotClusters
+umapPlotAnnot
+umapPlotAnnotClusters
+
+```
+
+# UMAP plots of clusters and SingleR annotation by group and library
+
+```{r umap_plots_split, eval=T, echo=F, fig.dim=c(15, 25), results='asis'}
+
+groups <- sort(unique(SObj$group))
+SObjSplitGroup <- SplitObject(SObj, split.by = "group")
+
+umapPlotsGroupAnnot <- list()
+umapPlotsGroupCluster <- list()
+umapPlotsGroupDensity <- list()
+
+for (group in groups) {
+    umapPlotsGroupCluster[[group]] <- DimPlot(SObjSplitGroup[[group]], group.by = clusterCol) +
+        scale_color_manual(
+            breaks = names(paletteClusters),
+            values = paletteClusters,
+            labels = clusters
+        ) +
+        labs(title = group)
+
+    umapPlotsGroupAnnot[[group]] <- DimPlot(SObjSplitGroup[[group]], group.by = annotCol) +
+        scale_color_manual(
+            breaks = names(paletteAnnots),
+            values = paletteAnnots,
+            labels = relevantCelltypesLabels
+        ) +
+        labs(title = group)
+
+    umapPlotsGroupDensity[[group]] <- plot_density(SObjSplitGroup[[group]], "cell_density") +
+        scale_color_viridis(limits = c(0, 0.025), oob=scales::squish) +
+        labs(title = group)
+}
+
+umapPlotsGroupClusterComb <- wrap_plots(
+    umapPlotsGroupCluster,
+    ncol = 2,
+    nrow = ceiling(length(groups)/2),
+    guides = "collect"
+)
+
+umapPlotsGroupAnnotComb <- wrap_plots(
+    umapPlotsGroupAnnot,
+    ncol = 2,
+    nrow = ceiling(length(groups)/2),
+    guides = "collect"
+)
+
+umapPlotsGroupDensityComb <- wrap_plots(
+    umapPlotsGroupDensity,
+    ncol = 2,
+    nrow = ceiling(length(groups)/2),
+    guides = "collect"
+)
+
+cat("## Plots by group")
+cat("\n\n")
+
+cat("### Clusters")
+cat("\n\n")
+print(umapPlotsGroupClusterComb)
+cat("\n\n")
+
+cat("### Annotation")
+cat("\n\n")
+print(umapPlotsGroupAnnotComb)
+cat("\n\n")
+
+cat("### Density")
+cat("\n\n")
+print(umapPlotsGroupDensityComb)
+cat("\n\n")
+
+libs <- sort(unique(SObj$orig.ident))
+SObjSplitLib <- SplitObject(SObj, split.by = "orig.ident")
+
+umapPlotsLibAnnot <- list()
+umapPlotsLibCluster <- list()
+umapPlotsLibDensity <- list()
+
+for (lib in libs) {
+    umapPlotsLibCluster[[lib]] <- DimPlot(SObjSplitLib[[lib]], group.by = clusterCol) +
+        scale_color_manual(values = paletteClusters) +
+        labs(title = lib)
+
+    umapPlotsLibAnnot[[lib]] <- DimPlot(SObjSplitLib[[lib]], group.by = annotCol) +
+        scale_color_manual(values = paletteAnnots) +
+        labs(title = lib)
+
+    umapPlotsLibDensity[[lib]] <- plot_density(SObjSplitLib[[lib]], "cell_density") +
+        scale_color_viridis(limits = c(0, 0.02)) +
+        labs(title = lib)
+}
+
+umapPlotsLibClusterComb <- wrap_plots(
+    umapPlotsLibCluster,
+    ncol = 2,
+    nrow = ceiling(length(libs)/2),
+    guides = "collect"
+)
+
+umapPlotsLibAnnotComb <- wrap_plots(
+    umapPlotsLibAnnot,
+    ncol = 2,
+    nrow = ceiling(length(libs)/2),
+    guides = "collect"
+)
+
+umapPlotsLibDensityComb <- wrap_plots(
+    umapPlotsLibDensity,
+    ncol = 2,
+    nrow = ceiling(length(libs)/2),
+    guides = "collect"
+)
+
+cat("## Plots by library")
+cat("\n\n")
+
+cat("### Clusters")
+cat("\n\n")
+print(umapPlotsLibClusterComb)
+cat("\n\n")
+
+cat("### Annotation")
+cat("\n\n")
+print(umapPlotsLibAnnotComb)
+cat("\n\n")
+
+cat("### Density")
+cat("\n\n")
+print(umapPlotsLibDensityComb)
+cat("\n\n")
+
+```
+
+# UMAP plots of SingleR scores for each reference cell type
+
+```{r umap_plots_scores, eval=T, echo=F, message=F, fig.dim=c(15, 15)}
+
+scoresSingleRForSObj <- labelsSingleR$scores
+singleRScoreIds <- paste0("score_SingleR_", colnames(scoresSingleRForSObj))
+colnames(scoresSingleRForSObj) <- singleRScoreIds
+
+SObj@meta.data <- cbind(SObj@meta.data, scoresSingleRForSObj)
+
+singleRScorePlotList <- list()
+
+for (scoreId in singleRScoreIds) {
+    singleRScorePlotList[[scoreId]] <- FeaturePlot(
+        SObj,
+        features = scoreId
+    ) + scale_color_gradient(limits=c(0, 1), high = "blue", low = "white")
+}
+
+singleRScorePlots <- wrap_plots(singleRScorePlotList, guides = "collect")
+
+singleRScorePlots
+
+singleRScorePlotLimitsList <- list()
+
+for (scoreId in singleRScoreIds) {
+    singleRScorePlotLimitsList[[scoreId]] <- FeaturePlot(
+        SObj,
+        features = scoreId
+    ) + scale_color_gradient(limits=c(0.75, 1), high = "blue", low = "white")
+}
+
+singleRScorePlotsLimits <- wrap_plots(singleRScorePlotLimitsList, guides = "collect")
+
+singleRScorePlotsLimits
+
+```
+
+# Distribution of celltypes across batches and conditions
+
+## Cell count plots
+
+```{r cell_number_analysis, eval=T, echo=F}
+
+metadata <- SObj@meta.data %>% tibble::rownames_to_column("cell_id")
+
+metadata[["orig.ident"]] <- factor(
+    metadata[["orig.ident"]],
+    levels = sort(unique(metadata$orig.ident))
+)
+metadata[["group"]] <- factor(
+    metadata[["group"]],
+    levels = sort(unique(metadata[["group"]]))
+)
+
+cellCountsGroup <- metadata %>%
+    dplyr::count(.data[[annotCol]], group, name = "n_cells_group")
+cellCountsLib <- metadata %>%
+    dplyr::count(.data[[annotCol]], orig.ident, name = "n_cells_lib")
+
+cellCounts <- metadata %>%
+    dplyr::count(.data[[annotCol]], group, orig.ident, name = "n_cells") %>%
+    inner_join(cellCountsGroup, by = c(annotCol, "group")) %>%
+    inner_join(cellCountsLib, by = c(annotCol, "orig.ident")) %>%
+    mutate(fraction_cells_in_group = n_cells/n_cells_group) %>%
+    mutate(fraction_cells_in_lib = n_cells/n_cells_lib)
+
+```
+
+### Cell counts by group or by library
+
+```{r cell_number_analysis_by_group_lib, eval=T, echo=F, fig.dim=c(18, 36), results='asis'}
+
+cellCountPlotsGroup <- list()
+
+for (celltype in relevantCelltypes) {
+    currData <- cellCountsGroup %>% filter(.data[[annotCol]] %in% celltype)
+    cellCountPlotsGroup[[celltype]] <- ggplot(
+        data = currData, aes(x = group, y = n_cells_group, fill = group)
+    ) +
+    geom_bar(stat="identity", position=position_dodge()) +
+    scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9", "#1f78b4", "#b2df8a", "#33a02c")) +
+    labs("title" = celltype)
+}
+
+cellCountPlotsLib <- list()
+
+for (celltype in relevantCelltypes) {
+    currData <- cellCountsLib %>% filter(.data[[annotCol]] %in% celltype)
+    cellCountPlotsLib[[celltype]] <- ggplot(
+        data = currData, aes(x = orig.ident, y = n_cells_lib, fill = orig.ident)
+    ) +
+    geom_bar(stat="identity", position=position_dodge()) +
+    scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9", "#1f78b4", "#b2df8a", "#33a02c")) +
+    labs("title" = celltype)
+}
+
+cat("#### Group")
+cat("\n\n")
+wrap_plots(cellCountPlotsGroup, guides = "collect", ncol = 2, nrow = 4)
+cat("\n\n")
+
+cat("#### Library")
+cat("\n\n")
+wrap_plots(cellCountPlotsLib, guides = "collect", ncol = 2, nrow = 4)
+cat("\n\n")
+
+```
+
+### Cell counts by group and library
+
+```{r cell_number_analysis_plots, eval=T, echo=F, fig.dim=c(18, 36), results='asis'}
+
+cellFractionPlotsGroup <- list()
+
+for (celltype in relevantCelltypes) {
+    currData <- cellCounts %>% filter(.data[[annotCol]] %in% celltype)
+    cellFractionPlotsGroup[[celltype]] <- ggplot(
+        data = currData, aes(x = group, y = fraction_cells_in_group, fill = orig.ident)
+    ) +
+    geom_bar(stat="identity", position = position_dodge()) +
+    scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9", "#1f78b4", "#b2df8a", "#33a02c")) +
+    labs("title" = celltype)
+}
+
+cellFractionPlotsLib <- list()
+
+for (celltype in relevantCelltypes) {
+    currData <- cellCounts %>% filter(.data[[annotCol]] %in% celltype)
+    cellFractionPlotsLib[[celltype]] <- ggplot(
+        data = currData, aes(x = orig.ident, y = fraction_cells_in_lib, fill = group)
+    ) +
+    geom_bar(stat="identity", position = position_dodge()) +
+    scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9", "#1f78b4", "#b2df8a", "#33a02c")) +
+    labs("title" = celltype)
+}
+
+# cellFractionPlots <- list()
+
+# for (celltype in relevantCelltypes) {
+#     currData <- cellCounts %>% filter(.data[[annotCol]] %in% celltype)
+#     cellFractionPlots[[celltype]] <- ggplot(
+#         data = currData, aes(x = group, y = fraction_cells_in_group, fill = orig.ident, label = n_cells)
+#     ) +
+#     geom_bar(stat="identity", position = position_dodge()) +
+#     geom_label(position = position_dodge(width = 0.9), vjust = -0.2) +
+#     scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9", "#1f78b4", "#b2df8a", "#33a02c")) +
+#     labs("title" = celltype)
+# }
+
+cellCountPlots <- list()
+
+for (celltype in relevantCelltypes) {
+    currData <- cellCounts %>% filter(.data[[annotCol]] %in% celltype)
+    cellCountPlots[[celltype]] <- ggplot(
+        data = currData, aes(x = group, y = n_cells, fill = orig.ident)
+    ) +
+    geom_bar(stat="identity", position=position_dodge()) +
+    scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9", "#1f78b4", "#b2df8a", "#33a02c")) +
+    labs("title" = celltype)
+}
+
+cat("#### Celltype counts")
+cat("\n\n")
+wrap_plots(cellCountPlots, guides = "collect", ncol = 2, nrow = 4)
+cat("\n\n")
+
+cat("#### Celltype fractions, by group")
+cat("\n\n")
+wrap_plots(cellFractionPlotsGroup, guides = "collect", ncol = 2, nrow = 4)
+cat("\n\n")
+
+cat("#### Celltype fractions, by library")
+cat("\n\n")
+wrap_plots(cellFractionPlotsLib, guides = "collect", ncol = 2, nrow = 4)
+cat("\n\n")
+
+```
+
+```{r celltype_fraction_tables, eval=T, echo=F, results='asis'}
+
+clusterFractionTables <- list()
+
+celltypeFractionTables <- getClusterFractionTables(
+    SObj,
+    batchCol = "orig.ident",
+    groupCol = "group",
+    clusterCol = annotCol
+)
+
+fractionTypes <- c("group", "batch")
+
+for (fractionType in fractionTypes) {
+    cat(paste0("## Fractions for: ", fractionType))
+    cat("\n\n")
+    print(kable(celltypeFractionTables[["pivot"]][[fractionType]][["cluster"]]))
+    cat("\n\n")
+    print(kable(celltypeFractionTables[["pivot"]][[fractionType]][[fractionType]]))
+    cat("\n\n")
+}
+
+```
+
+# SingleR annotation tables
+
+## Annotation at single cell level
+
+```{r annot_tables_SingleR, eval=T, echo=F}
+
+kable(table(labelsSingleR$labels))
+
+kable(SObj@meta.data %>% dplyr::count(.data[[clusterCol]], .data[[annotCol]]))
+
+```
+
+## Scores at single cell level averaged by cluster and annotation
+
+```{r annot_SingleR_scores, eval=T, echo=F}
+
+scores <- as.data.frame(labelsSingleR$scores)
+rownames(scores) <- rownames(labelsSingleR)
+
+SObj@meta.data[rownames(scores), paste0("scores_", colnames(scores))] <- scores
+
+scoreTableClusterAnnotStemTA <- SObj@meta.data %>%
+    filter(.data[[annotCol]] %in% c("Stem", "TA")) %>%
+    group_by(.data[[clusterCol]], .data[[annotCol]]) %>%
+    summarise(across(c("scores_Stem", "scores_TA"), mean))
+
+scoreTableClusterAnnot <- SObj@meta.data %>%
+    group_by(.data[[clusterCol]], .data[[annotCol]]) %>%
+    summarise(across(starts_with("scores_"), mean))
+
+kable(scoreTableClusterAnnotStemTA)
+kable(scoreTableClusterAnnot)
+
+```
+
+## Annotation at cluster level
+
+```{r annot_tables_SingleR_clusters, eval=T, echo=F}
+
+annotTableClusters <- cbind(
+    labelsSingleRClusters[, c("first.labels", "labels", "pruned.labels")],
+    labelsSingleRClusters$tuning.scores
+)
+kable(annotTableClusters)
+
+annotClustersScores <- labelsSingleRClusters$scores
+rownames(annotClustersScores) <- rownames(annotTableClusters)
+
+kable(annotClustersScores)
+
+```
+
+```{r save_plots, eval=saveData, echo=F}
+
+plotPathManuscript <- proot$find_file(config$outputpath, "fig", "manuscript")
+plotPathUmapPlots <- file.path(plotPathManuscript, "umap_annot_clustering")
+
+groupNameMapping <- str_replace_all(groups, "-", " + ")
+names(groupNameMapping) <- groups
+
+libNameMapping <- str_replace_all(libs, "-2$", "")
+names(libNameMapping) <- libs
+
+# SingleR score heatmap
+
+pheatmap(
+    scoresSingleRMatNorm,
+    filename = proot$find_file(plotPathManuscript, "heatmaps_annot", "score_heatmap_SingleR.pdf"),
+    width = 10,
+    height = 10,
+    color = viridis(100),
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    show_colnames = FALSE,
+    annotation_col = scoresSingleR[, "Celltype annotation", drop = FALSE],
+    annotation_colors = list("Celltype annotation" = paletteAnnotsOrig),
+    annotation_names_col = FALSE,
+    breaks = seq(0, 1, length.out = 101),
+    legend_breaks = c(0, 1),
+    legend_labels = c("Lower", "Higher")
+)
+
+# UMAP plot SingleR annotation
+
+ggsave(
+    filename = file.path(plotPathUmapPlots, "umap_plot_annotation.pdf"),
+    plot = umapPlotAnnot + labs(title = NULL) + 
+        theme(
+            text = element_text(size = 20),
+            axis.text = element_text(size = 20),
+            legend.position = "none"
+        ),
+    device = "pdf",
+    dpi = 300,
+    width = 8.5,
+    height = 10
+)
+
+## With legend
+
+ggsave(
+    filename = file.path(plotPathUmapPlots, "umap_plot_annotation_legend.pdf"),
+    plot = umapPlotAnnot + labs(title = NULL) +
+        theme(
+            text = element_text(size = 20),
+            axis.text = element_text(size = 20),
+            legend.position = "right"
+        ) + guides(colour = guide_legend(override.aes = list(size = 5))),
+    device = "pdf",
+    dpi = 300,
+    width = 11,
+    height = 10
+)
+
+# UMAP plot clustering
+
+ggsave(
+    filename = file.path(plotPathUmapPlots, "umap_plot_clustering.pdf"),
+    plot = umapPlotClusters + labs(title = NULL) +
+        theme(
+            text = element_text(size = 20),
+            axis.text = element_text(size = 20),
+            legend.position = "none"
+        ),
+    device = "pdf",
+    dpi = 300,
+    width = 8.5,
+    height = 10
+)
+
+## With legend
+
+ggsave(
+    filename = file.path(plotPathUmapPlots, "umap_plot_clustering_legend.pdf"),
+    plot = umapPlotClusters + labs(title = NULL) +
+        theme(
+            text = element_text(size = 20),
+            axis.text = element_text(size = 20),
+            legend.position = "right"
+        ) + guides(colour = guide_legend(override.aes = list(size = 5))),
+    device = "pdf",
+    dpi = 300,
+    width = 9.5,
+    height = 10
+)
+
+# UMAP plots SingleR annotation by group
+
+for (group in groups) {
+    currName <- paste0("umap_plot_annotation_cond_", group, ".pdf")
+
+    currPlot <- umapPlotsGroupAnnot[[group]] +
+        labs(title = groupNameMapping[group]) +
+        theme(
+            text = element_text(size = 20),
+            axis.text = element_text(size = 20),
+            legend.position = "none"
+        )
+
+    ggsave(
+        filename = file.path(plotPathUmapPlots, currName),
+        plot = currPlot,
+        device = "pdf",
+        dpi = 300,
+        width = 8.5,
+        height = 10
+    )
+}
+
+# UMAP plots clustering by group
+
+for (group in groups) {
+    currName <- paste0("umap_plot_clustering_cond_", group, ".pdf")
+
+    currPlot <- umapPlotsGroupCluster[[group]] +
+        labs(title = groupNameMapping[group]) +
+        theme(
+            text = element_text(size = 20),
+            axis.text = element_text(size = 20),
+            legend.position = "none"
+        )
+
+    ggsave(
+        filename = file.path(plotPathUmapPlots, currName),
+        plot = currPlot,
+        device = "pdf",
+        dpi = 300,
+        width = 8.5,
+        height = 10
+    )
+}
+
+# UMAP plots SingleR annotation by lib
+
+ggsave(
+    filename = file.path(plotPathUmapPlots, "umap_plot_annotation_lib_comb.pdf"),
+    plot = umapPlotsLibAnnotComb,
+    dpi = 300,
+    width = 12,
+    height = 15
+)
+
+# UMAP plots clustering by lib
+
+ggsave(
+    filename = file.path(plotPathUmapPlots, "umap_plot_clustering_lib_comb.pdf"),
+    plot = umapPlotsLibClusterComb,
+    dpi = 300,
+    width = 11,
+    height = 15
+)
+
+```
+
+```{r save_plot_data, eval=saveData, echo=F}
+
+plotDataPath <- file.path(plotPathManuscript, "plot_data")
+
+# UMAP plots
+
+umapPlotData <- as.data.frame(SObj[["umap"]]@cell.embeddings)
+
+all.equal(rownames(umapPlotData), rownames(SObj@meta.data))
+
+umapPlotData[["orig.ident"]] <- SObj@meta.data[["orig.ident"]]
+umapPlotData[["group"]] <- SObj@meta.data[["group"]]
+
+umapPlotData[[clusterCol]] <- SObj@meta.data[[clusterCol]]
+umapPlotData[[annotCol]] <- SObj@meta.data[[annotCol]]
+
+uCellScoreCols <- colnames(SObj@meta.data)[grep("_UCell$", colnames(SObj@meta.data))]
+umapPlotData[, uCellScoreCols] <- SObj@meta.data[, uCellScoreCols]
+
+write.csv(
+    umapPlotData,
+    file = file.path(plotDataPath, "umap_plot_data.csv"),
+    row.names = TRUE,
+    quote = FALSE
+)
+
+# SingleR score heatmaps
+
+scoreHeatmapData <- as.data.frame(t(scoresSingleRMatNorm))[rownames(SObj@meta.data), ]
+
+all.equal(rownames(scoreHeatmapData), rownames(SObj@meta.data))
+
+scoreHeatmapData[[annotCol]] <- SObj@meta.data[[annotCol]]
+
+write.csv(
+    scoreHeatmapData,
+    file = file.path(plotDataPath, "SingleR_score_heatmap_data.csv"),
+    row.names = TRUE,
+    quote = FALSE
+)
+
+```
+
+# SessionInfo
+
+```{r sessionInfo}
+
+sessionInfo()
+
+```
+

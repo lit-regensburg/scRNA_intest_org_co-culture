@@ -1,0 +1,23 @@
+Seurat_rawobj:
+  B1-library-2: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_B1-library-2_2023-05-04.rds
+  B2-library-2: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_B2-library-2_2023-05-04.rds
+  B3-library-2: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_B3-library-2_2023-05-04.rds
+  B4-library-2: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_B4-library-2_2023-05-04.rds
+  B5-library-2: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_B5-library-2_2023-05-04.rds
+  B6-library-2: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_B6-library-2_2023-05-04.rds
+Seurat_rawall: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_merged_2023-05-04.rds
+config: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/config.yaml
+outpaths:
+  fig: fig
+  table: table
+  data: data
+  report: report
+filters:
+  nCount_RNA: ~
+  nFeature_RNA: ~
+  percent.mt: ~
+scParam:
+  PCdims: ~
+  jack: no
+  VarFeat: 3000
+  integration: ~

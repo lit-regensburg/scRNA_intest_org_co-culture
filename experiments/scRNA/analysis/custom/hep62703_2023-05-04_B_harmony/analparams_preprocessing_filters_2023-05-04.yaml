@@ -1,0 +1,34 @@
+Seurat_rawobj:
+  B1-library-2: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_B1-library-2_2023-05-04.rds
+  B2-library-2: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_B2-library-2_2023-05-04.rds
+  B3-library-2: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_B3-library-2_2023-05-04.rds
+  B4-library-2: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_B4-library-2_2023-05-04.rds
+  B5-library-2: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_B5-library-2_2023-05-04.rds
+  B6-library-2: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_B6-library-2_2023-05-04.rds
+Seurat_rawall: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_raw_merged_2023-05-04.rds
+config: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/config.yaml
+outpaths:
+  fig: fig
+  table: table
+  data: data
+  report: report
+filters:
+  nCount_RNA:
+  - 10000
+  - 90000
+  nFeature_RNA:
+  - 3000
+  - 10000
+  percent.mt:
+  - 0
+  - 8.5
+libsExclude: B6-library-2
+scParam:
+  PCdims: 30.0
+  jack: no
+  VarFeat: 3000
+  integration: harmony
+doublet_data: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/scDblFinder_cluster-dbr-custom-no-neg_2023-03-29.rds
+last_modified_time: 2023-07-17 11:06:38
+last_modified_entry: Seurat_clustered
+Seurat_clustered: experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/data/SeuratObj_clustered_2023-05-04.rds

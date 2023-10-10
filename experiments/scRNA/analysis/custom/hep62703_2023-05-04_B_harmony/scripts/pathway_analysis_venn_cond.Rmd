@@ -1,0 +1,453 @@
+---
+title: "scRNA-seq of cells from mouse intenstine organoids in Treg-Coculture"
+subtitle: "Pathway analysis Venn diagrams"
+author: "Paul Heinrich"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+        toc_collapsed: true
+        toc_depth: 3
+---
+
+```{r setup1, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setup2,echo=FALSE, warning=FALSE, message=FALSE, results='hide'}
+#rbioc_3-14
+library(rprojroot)
+library(yaml)
+library(knitr)
+
+saveData <- FALSE
+
+root_criterion <- ".projroot"
+proot <- rprojroot::has_file(root_criterion)
+
+source(proot$find_file("experiments/scRNA/analysis/custom/functions/custom_functions.R"))
+
+params <- list()
+params$config <- proot$find_file("experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/config.yaml")
+params$analparams <- proot$find_file("experiments/scRNA/analysis/custom/hep62703_2023-05-04_B_harmony/analparams_preprocessing_filters_2023-05-04.yaml")
+params$date <- Sys.Date()
+
+config <- yaml.load_file(proot$find_file(params$config))
+today <- params$date
+
+config <- yaml.load_file(proot$find_file(params$config))
+analparams <- yaml.load_file(proot$find_file(params$analparams))
+
+# libraries
+libload <- c(
+    "Seurat","ggplot2", "harmony", "Nebulosa", "future",
+    "WriteXLS", "knitr", "stringr", "tidyr", "dplyr", "pheatmap",
+    "RColorBrewer", "ggvenn", "patchwork", "yaml", "grid"
+)
+
+for(i in libload) {
+    library(i, character.only = T)
+}
+
+plan("multicore", workers = 6)
+plan()
+
+set.seed(7)
+```
+
+```{r loaddata,eval=T,echo=F}
+
+fgseaResults <- readRDS(proot$find_file(config$outputpath, "data", "gsea_nebula_cond_cpc-0.005_2023-05-26.rds"))
+
+```
+
+# Venn diagrams of pathway regulation overlap between conditions
+
+Venn diagrams showing the overlap of up/-downregulated pathways/gene sets between conditions. A gene set was considered regulated if it had an adjusted p-value <= 0.1 from GSEA.
+
+```{r regulated_pathways, eval=T, echo=F, results='asis'}
+
+relevantComparisons <- c(
+    "IFNg_IL10_vs_Ctrl",
+    "Treg_vs_Ctrl",
+    "Treg_aIL10R_vs_Ctrl",
+    "Treg_aIFNg_vs_Ctrl",
+    "Treg_aIFNg_aIL10R_vs_Ctrl",
+    "Treg_aIL10R_vs_Treg",
+    "Treg_aIFNg_vs_Treg",
+    "Treg_aIFNg_aIL10R_vs_Treg"
+)
+
+fdrThreshold <- 0.1
+
+regulatedPathways <- list()
+
+for (celltype in names(fgseaResults)) {
+    regulatedPathways[[celltype]] <- list(
+        "up" = list(),
+        "down" = list()
+    )
+    for (comp in relevantComparisons) {
+        currTable <- fgseaResults[[celltype]] %>%
+            filter(comparison == comp) %>%
+            filter(padj_fdr <= fdrThreshold)
+
+        pathwaysUp <- currTable %>% filter(NES >= 0) %>% pull(pathway)
+        pathwaysDown <- currTable %>% filter(NES < 0) %>% pull(pathway)
+
+        regulatedPathways[[celltype]][["up"]][[comp]] <- pathwaysUp
+        regulatedPathways[[celltype]][["down"]][[comp]] <- pathwaysDown
+    }
+}
+
+```
+
+```{r create_venn_diagrams, eval=T, echo=F, results='asis'}
+
+vennDiagrams <- list()
+vennTables <- list()
+
+vennCombs <- list(
+    "Treg_aIL10R_vs_Ctrl" = c(
+        "IFNg_IL10_vs_Ctrl",
+        "Treg_vs_Ctrl",
+        "Treg_aIL10R_vs_Ctrl"
+    ),
+    "Treg_aIFNg_vs_Ctrl" = c(
+        "IFNg_IL10_vs_Ctrl",
+        "Treg_vs_Ctrl",
+        "Treg_aIFNg_vs_Ctrl"
+    ),
+    "Treg_aIFNg_aIL10R_vs_Ctrl" = c(
+        "IFNg_IL10_vs_Ctrl",
+        "Treg_vs_Ctrl",
+        "Treg_aIFNg_aIL10R_vs_Ctrl"
+    )
+)
+
+for (celltype in names(fgseaResults)) {
+    vennDiagrams[[celltype]] <- list(
+        "up" = list(),
+        "down" = list()
+    )
+    vennTables[[celltype]] <- vennDiagrams[[celltype]]
+
+    for (vennComb in names(vennCombs)) {
+        currPathways <- list()
+        for (direction in names(vennDiagrams[[celltype]])) {
+            currPathways[[direction]] <- regulatedPathways[[celltype]][[direction]][
+                vennCombs[[vennComb]]
+            ]
+
+            pathwaysUnion <- Reduce(union, currPathways[[direction]])
+
+            currTable <- data.frame(
+                "pathway" = pathwaysUnion
+            )
+
+            for (comparison in vennCombs[[vennComb]]) {
+                currTable[[comparison]] <- currTable$pathway %in% currPathways[[direction]][[comparison]]
+            }
+
+            vennTables[[celltype]][[direction]][[vennComb]] <- currTable
+
+            vennDiagrams[[celltype]][[direction]][[vennComb]] <- ggvenn(
+                currPathways[[direction]],
+                fill_color = c("#0073C2FF", "#006600", "#b1adadbd"),
+                fill_alpha = 0.5,
+                stroke_size = 0.5
+            )
+        }
+    }
+}
+
+```
+
+```{r plot_venn_diagrams, eval=T, echo=F, results='asis', fig.dim=c(24, 12)}
+
+for (celltype in names(fgseaResults)) {
+    cat(paste0("## Celltype: ", celltype))
+    cat("\n\n")
+
+    for (direction in names(vennDiagrams[[celltype]])) {
+        cat(paste0("### ", str_to_title(direction), "regulated pathways"))
+        cat("\n\n")
+
+        print(wrap_plots(vennDiagrams[[celltype]][[direction]], nrow = 1, ncol = 3))
+        cat("\n\n")
+
+        cat("#### Pathways not regulated in Treg_aIL10R_vs_Ctrl")
+        cat("\n\n")
+
+        currTable <- vennTables[[celltype]][[direction]]$Treg_aIL10R_vs_Ctrl
+        currPathways <- currTable$pathway[
+            currTable$IFNg_IL10_vs_Ctrl &
+            currTable$Treg_vs_Ctrl &
+            !(currTable$Treg_aIL10R_vs_Ctrl)
+        ]
+        currPathwayResults <- fgseaResults[[celltype]] %>%
+            filter(pathway %in% currPathways) %>%
+            filter(comparison %in% vennCombs[["Treg_aIL10R_vs_Ctrl"]]) %>%
+            mutate(comp_short = str_remove(comparison, "_vs_Ctrl$")) %>%
+            relocate(comp_short, .before = gene_set_lib)
+
+        if(nrow(currPathwayResults)) {
+            currPathwayResults <- pivot_wider(
+                currPathwayResults,
+                id_cols = "pathway",
+                names_from = "comp_short",
+                values_from = c("padj_fdr", "NES")
+            )
+
+            print(kable(currPathwayResults))
+            cat("\n\n")
+        }
+
+        cat("#### Pathways regulated in IFNg_IL10_vs_Ctrl, Treg_vs_Ctrl and Treg_aIFNg_vs_Ctrl")
+        cat("\n\n")
+
+        currTable <- vennTables[[celltype]][[direction]]$Treg_aIFNg_vs_Ctrl
+        currPathways <- currTable$pathway[
+            currTable$IFNg_IL10_vs_Ctrl &
+            currTable$Treg_vs_Ctrl &
+            currTable$Treg_aIFNg_vs_Ctrl
+        ]
+        currPathwayResults <- fgseaResults[[celltype]] %>%
+            filter(pathway %in% currPathways) %>%
+            filter(comparison %in% vennCombs[["Treg_aIFNg_vs_Ctrl"]]) %>%
+            mutate(comp_short = str_remove(comparison, "_vs_Ctrl$")) %>%
+            relocate(comp_short, .before = gene_set_lib)
+
+        if(nrow(currPathwayResults)) {
+            currPathwayResults <- pivot_wider(
+                currPathwayResults,
+                id_cols = "pathway",
+                names_from = "comp_short",
+                values_from = c("padj_fdr", "NES")
+            )
+
+            print(kable(currPathwayResults))
+            cat("\n\n")
+        }
+
+        cat("#### Pathways regulated in IFNg_IL10_vs_Ctrl, Treg_vs_Ctrl and Treg_aIFNg_aIL10R_vs_Ctrl")
+        cat("\n\n")
+
+        currTable <- vennTables[[celltype]][[direction]]$Treg_aIFNg_aIL10R_vs_Ctrl
+        currPathways <- currTable$pathway[
+            currTable$IFNg_IL10_vs_Ctrl &
+            currTable$Treg_vs_Ctrl &
+            currTable$Treg_aIFNg_aIL10R_vs_Ctrl
+        ]
+        currPathwayResults <- fgseaResults[[celltype]] %>%
+            filter(pathway %in% currPathways) %>%
+            filter(comparison %in% vennCombs[["Treg_aIFNg_aIL10R_vs_Ctrl"]]) %>%
+            mutate(comp_short = str_remove(comparison, "_vs_Ctrl$")) %>%
+            relocate(comp_short, .before = gene_set_lib)
+
+        if(nrow(currPathwayResults)) {
+            currPathwayResults <- pivot_wider(
+                currPathwayResults,
+                id_cols = "pathway",
+                names_from = "comp_short",
+                values_from = c("padj_fdr", "NES")
+            )
+
+            print(kable(currPathwayResults))
+            cat("\n\n")
+        }
+    }
+}
+
+```
+
+# Pathway correlation between conditions via NES
+
+Pearson correlation of GSEA derived normalized enrichment scores (NES) between conditions to reflect
+pathway correlation between conditions. To reduce statistical noise, only pathways significantly regulated
+at an FDR of 10% in either of the two conditions (vs. Ctrl) have been used in the correlation.
+
+```{r condition_corr, eval=T, echo=F, results='asis'}
+
+corrTestResults <- list()
+corrResults <- list()
+corrPvalResults <- list()
+
+selectedCorrelations <- list(
+    c("IFNg_IL10_vs_Ctrl", "Treg_vs_Ctrl"),
+    c("IFNg_IL10_vs_Ctrl", "Treg_aIFNg_aIL10R_vs_Ctrl"),
+    c("Treg_vs_Ctrl", "Treg_aIFNg_aIL10R_vs_Ctrl"),
+    c("IFNg_IL10_vs_Ctrl", "Treg_aIL10R_vs_Ctrl"),
+    c("IFNg_IL10_vs_Ctrl", "Treg_aIFNg_vs_Ctrl")
+)
+selectedCorrelationsNames <- lapply(
+    selectedCorrelations,
+    function(x) str_remove(x, "_vs_Ctrl")
+)
+selectedCorrelationsNames <- sapply(
+    selectedCorrelationsNames,
+    function(x) paste(x, collapse = "_with_")
+)
+names(selectedCorrelations) <- selectedCorrelationsNames
+
+for (celltype in names(fgseaResults)) {
+    corrTestResults[[celltype]] <- list()
+
+    for (corr in names(selectedCorrelations)) {
+        groupA <- selectedCorrelations[[corr]][1]
+        groupB <- selectedCorrelations[[corr]][2]
+
+        combinedPathways <- Reduce(
+            union,
+            list(
+                regulatedPathways[[celltype]]$up[[groupA]],
+                regulatedPathways[[celltype]]$up[[groupB]],
+                regulatedPathways[[celltype]]$down[[groupA]],
+                regulatedPathways[[celltype]]$down[[groupB]]
+            )
+        )
+
+        nesA <- fgseaResults[[celltype]] %>%
+            filter(comparison == groupA) %>%
+            slice(match(combinedPathways, pathway)) %>%
+            pull(NES)
+        nesB <- fgseaResults[[celltype]] %>%
+            filter(comparison == groupB) %>%
+            slice(match(combinedPathways, pathway)) %>%
+            pull(NES)
+
+        corrTestResults[[celltype]][[corr]] <- cor.test(nesA, nesB, method = "pearson")
+    }
+
+    corrResults[[celltype]] <- sapply(corrTestResults[[celltype]], function(x) unname(x$estimate))
+    corrPvalResults[[celltype]] <- sapply(corrTestResults[[celltype]], function(x) x$p.value)
+}
+
+corrResults <- data.frame(corrResults)
+corrPvalResults <- data.frame(corrPvalResults)
+
+cat("## Correlation coefficients")
+cat("\n\n")
+
+print(kable(corrResults))
+cat("\n\n")
+
+cat("## Correlation p-values")
+cat("\n\n")
+
+print(kable(corrPvalResults))
+cat("\n\n")
+
+```
+
+## Correlation coefficient heatmap
+
+```{r condition_corr_plot, eval=T, echo=F, results='asis', fig.dim=c(6, 4)}
+
+corrHeatmap <- pheatmap(
+    corrResults,
+    color = colorRampPalette(rev(brewer.pal(n = 9, name = "RdBu")))(100),
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    breaks = seq(-1, 1, length.out = 100),
+    angle_col = 45,
+    silent = TRUE
+)
+
+grid.draw(corrHeatmap$gtable)
+
+```
+
+```{r condition_corr_plot_subset, eval=T, echo=F, results='asis', fig.dim=c(6, 3)}
+
+celltypeSubset <- colnames(corrResults)[
+    !(colnames(corrResults) %in% c("Enterocyte.Progenitor", "Endocrine"))
+]
+
+comparisonSubset <- c(
+    "IFNg_IL10_with_Treg",
+    "IFNg_IL10_with_Treg_aIFNg_aIL10R",
+    "Treg_with_Treg_aIFNg_aIL10R"
+)
+
+corrResultsSubset <- corrResults[comparisonSubset, celltypeSubset]
+
+corrHeatmapSubset <- pheatmap(
+    corrResultsSubset,
+    color = colorRampPalette(rev(brewer.pal(n = 9, name = "RdBu")))(100),
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    breaks = seq(-1, 1, length.out = 100),
+    angle_col = 45,
+    silent = TRUE
+)
+
+grid.draw(corrHeatmapSubset$gtable)
+
+```
+
+```{r save_data, eval=saveData, echo=F}
+
+# Correlation heatmaps
+
+plotPathHeatmaps <- proot$find_file(config$outputpath, "fig", "manuscript", "pathway_heatmaps")
+
+pdf(
+    file = file.path(plotPathHeatmaps, "pathway_correlation_heatmap.pdf"),
+    width = 6,
+    height = 4
+)
+
+grid.draw(corrHeatmap$gtable)
+
+dev.off()
+
+pdf(
+    file = file.path(plotPathHeatmaps, "pathway_correlation_heatmap_subset.pdf"),
+    width = 6,
+    height = 3
+)
+
+grid.draw(corrHeatmapSubset$gtable)
+
+dev.off()
+
+# Correlation and correlation p-value files
+
+write.csv(
+    corrResults,
+    file = proot$find_file(config$outputpath, "table", "pathway_correlations_NES.csv"),
+    quote = FALSE,
+    row.names = TRUE
+)
+write.csv(
+    corrPvalResults,
+    file = proot$find_file(config$outputpath, "table", "pathway_correlation_NES_p_values.csv"),
+    quote = FALSE,
+    row.names = TRUE
+)
+
+# File of regulated pathways
+
+write_yaml(
+    regulatedPathways,
+    proot$find_file(config$outputpath, "data", "regulated_pathways_cond.yaml")
+)
+
+# File of regulated pathways, for manuscript supp data
+
+write_yaml(
+    regulatedPathways,
+    proot$find_file(config$outputpath, "fig", "manuscript", "plot_data", "venn_regulated_pathways.yaml")
+)
+
+```
+
+# SessionInfo
+
+```{r sessionInfo}
+
+sessionInfo()
+
+```
+
